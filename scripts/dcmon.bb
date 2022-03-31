@@ -2,7 +2,6 @@
 (ns dcmon
   (:require [clojure.string :as S]
             [clojure.pprint :refer [pprint]]
-            [clojure.walk :refer [postwalk]]
             [promesa.core :as P]
             [cljs-bean.core :refer [->clj]]
             [reagent.core :as reagent]
@@ -116,15 +115,35 @@ Options:
 (defn obj->str [obj]
   (js/JSON.stringify (clj->js obj)))
 
+(defn log-regex [regexes]
+  (let [regexes (if (empty? regexes) [nil] regexes)
+        regexes (map-indexed #(str "(?<c" %1 ">" (or %2 "^\b$") ")") regexes)]
+    (js/RegExp. (str "^(20[0-9-]+T[0-9:.]+Z)\\s+.*("
+                     (S/join "|" regexes) ")") "m")))
+
+(defn log-regex-match [re s]
+  (when-let [match (.match s re)]
+    (let [ts (second match)
+          cindex (-> match
+                     .-groups
+                     js/Object.entries
+                     (->> (filter second)) ;; matching groups
+                     first                 ;; first matching group
+                     first                 ;; just the group name
+                     (.substr 1)           ;; trim the prefix
+                     js/parseInt)]         ;; numeric
+      {:ts ts :cindex cindex})))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; UI (ink/reagent) and Logging
 
 ;; {:services   {S-NAME {C-IDX {:id C-ID
 ;;                              :log-stream LOG-STREAM
 ;;                              :log-lines COUNT-OF-LOG-LINES
+;;                              :log-regex COMBINED-LOG-REGEX
 ;;                              :checks [{:id CHEKCK-ID
 ;;                                        :done? DONE?
-;;                                        :regex REGEX-MATCH}
+;;                                        :regex CHECK-REGEX-STR}
 ;;                                       {:id CHEKCK-ID
 ;;                                        :done? DONE?
 ;;                                        :cmd CMD
@@ -174,7 +193,10 @@ Options:
       (bar 3)
       [:> Box {:width (:log-lines WIDTHS)}
        [:> Text { :color "blue"} "Logs"]]
-      (bar 4)]
+      (bar 4)
+      [:> Box {:width (-> (:check-id WIDTHS) inc (* check-len) dec)}
+       [:> Text { :color "blue"} "Checks"]]
+      (bar 5)]
 
      ;; Data Rows
      (for [[service cstates] sorted-services
@@ -188,10 +210,10 @@ Options:
          [:> Text {:color svc-color :wrap "truncate"} (name service)]]
         (bar 2)
         [:> Box {:width (:status WIDTHS)}
-         [:> Text {:color svc-color} (or Status "unknown")]]
+         [:> Text {:color svc-color :wrap "truncate"} (or Status "unknown")]]
         (bar 3)
         [:> Box {:width (:log-lines WIDTHS)}
-         [:> Text {} log-lines]]
+         [:> Text {:wrap "truncate"} log-lines]]
         (bar 4)
         (for [check-idx (range check-len)
               :let [{:keys [id] :as check} (get checks check-idx)]]
@@ -224,7 +246,7 @@ Options:
                   (js/process.exit 0))
 
       :timeout (js/process.exit (:exit-code data))
-      
+
       nil)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -280,24 +302,22 @@ Options:
 
 (defn docker-log-handler [service cidx chnk]
   (let [{:keys [services]} @ctx
-        {:keys [checks log-lines]} (get-in services [service cidx])
+        {:keys [checks log-lines log-regex]} (get-in services [service cidx])
         log (.toString chnk "utf8")
-        new-checks (doall
-                     (for [{:keys [id regex] :as check} checks]
-                       (if (not regex)
-                         check
-                         (if-let [[line ts match] (.match log regex)]
-                           (let [check (assoc check :done? true)]
-                             (event :log-match {:service service :cidx cidx
-                                                :check check :ts ts :match match})
-                             check)
-                           check))))]
+        match (log-regex-match log-regex log)
+        new-checks (if match
+                     (let [{:keys [ts cindex]} match
+                           check (get checks cindex)]
+                       (event :log-match {:service service :cidx cidx
+                                          :check check :ts ts})
+                       (assoc-in checks [cindex :done?] true))
+                     checks)]
     (swap! ctx update-in [:services service cidx]
            merge {:log-lines (inc log-lines)
-                  :checks (vec new-checks)})))
+                  :checks new-checks})))
 
 (defn clear-checks [service cidx]
-  (swap! ctx update-in [:services service cidx :checks] 
+  (swap! ctx update-in [:services service cidx :checks]
          #(vec (map (fn [cs] (dissoc cs :done? :result :exec)) %))))
 
 ;; async
@@ -360,22 +380,19 @@ Options:
     ;;(prn :event :evt evt :start? start?)
     (update-container docker (:id evt) start?)))
 
+
 (defn services-map
-  "Add checks to each service (defined in compose config)
-  while transforming regex strings into real regex objects
-  and adding default values."
+  "Add checks and defaults to each service (defined in compose config).
+  Create a top-level combined regex of checks for each service."
   [services checks]
-  (postwalk
-    #(if-let [r (:regex %)]
-       (assoc % :regex (js/RegExp. (str "^(20[0-9-]+T[0-9:.]+Z)\\s+.*(" r ")") "m"))
-       %)
-    (into {} (for [[service {:keys [scale]}] services]
-               [service
-                (into {} (for [cidx (range 1 (inc (or scale 1)))]
-                           [cidx
-                            {:id nil
-                             :log-lines 0
-                             :checks (vec (get checks service))}]))]))))
+  (into {} (for [[service {:keys [scale]}] services]
+             [service
+              (into {} (for [cidx (range 1 (inc (or scale 1)))]
+                         [cidx
+                          {:id nil
+                           :log-lines 0
+                           :log-regex (log-regex (map :regex (get checks service)))
+                           :checks (vec (get checks service))}]))])))
 
 
 (P/let [opts (parse-opts (or *command-line-args* (clj->js [])))
@@ -416,6 +433,7 @@ Options:
                                        (:checks checks-cfg))
                :containers {}})
   ;;(pprint @ctx)
+  ;;(js/process.exit 1)
 
   (event :monitor-start {:settings settings})
 
