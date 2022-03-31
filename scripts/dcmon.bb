@@ -2,6 +2,7 @@
 (ns dcmon
   (:require [clojure.string :as S]
             [clojure.pprint :refer [pprint]]
+            [clojure.walk :refer [postwalk]]
             [promesa.core :as P]
             [cljs-bean.core :refer [->clj]]
             [reagent.core :as reagent]
@@ -207,7 +208,7 @@ Options:
         {:keys [show-events?]} settings
         {:keys [service cidx finished]} data
         ;; TODO: should be timestamp from log match
-        ts (.toISOString (js/Date.))]
+        ts (or (:ts data) (.toISOString (js/Date.)))]
     (when show-events?
       (println (str ts " " kind " "  data)))
     (when log-stream
@@ -281,18 +282,16 @@ Options:
   (let [{:keys [services]} @ctx
         {:keys [checks log-lines]} (get-in services [service cidx])
         log (.toString chnk "utf8")
-        ;;_ (prn :log log)
         new-checks (doall
                      (for [{:keys [id regex] :as check} checks]
                        (if (not regex)
                          check
-                         (if-let [match (.match log regex)]
+                         (if-let [[line ts match] (.match log regex)]
                            (let [check (assoc check :done? true)]
                              (event :log-match {:service service :cidx cidx
-                                                :check check :match (js->clj match)})
+                                                :check check :ts ts :match match})
                              check)
                            check))))]
-    ;;(prn :log :servie service :cidx cidx log)
     (swap! ctx update-in [:services service cidx]
            merge {:log-lines (inc log-lines)
                   :checks (vec new-checks)})))
@@ -350,7 +349,8 @@ Options:
       (fn [err]
         ;;(prn :statuscode (.-statusCode err))
         (if (= 404 (.-statusCode err))
-          (swap! ctx assoc-in [:containers id :State :Status] "unknown")
+          (event :container-not-found {:id id})
+          ;;(swap! ctx assoc-in [:containers id :State :Status] "unknown")
           (prn :error :id id :error (->clj err)))))))
 
 ;; async
@@ -360,25 +360,22 @@ Options:
     ;;(prn :event :evt evt :start? start?)
     (update-container docker (:id evt) start?)))
 
-(defn init-services
+(defn services-map
   "Add checks to each service (defined in compose config)
   while transforming regex strings into real regex objects
   and adding default values."
   [services checks]
-  (into {}
-        (for [[service {:keys [scale]}] services]
-          [service
-           (into {}
-                 (for [cidx (range 1 (inc (or scale 1)))]
-                   [cidx
-                    (let [schecks (for [check (get checks service)
-                                        :let [{:keys [regex] :as check} check]]
-                                    (if regex
-                                      (assoc check :regex (js/RegExp. regex "mg"))
-                                      check))]
-                      {:id nil
-                       :log-lines 0
-                       :checks (vec schecks)})]))])))
+  (postwalk
+    #(if-let [r (:regex %)]
+       (assoc % :regex (js/RegExp. (str "^(20[0-9-]+T[0-9:.]+Z)\\s+.*(" r ")") "m"))
+       %)
+    (into {} (for [[service {:keys [scale]}] services]
+               [service
+                (into {} (for [cidx (range 1 (inc (or scale 1)))]
+                           [cidx
+                            {:id nil
+                             :log-lines 0
+                             :checks (vec (get checks service))}]))]))))
 
 
 (P/let [opts (parse-opts (or *command-line-args* (clj->js [])))
@@ -415,8 +412,8 @@ Options:
 
   (reset! ctx {:settings settings
                :log-stream log-stream
-               :services (init-services (:services config)
-                                        (:checks checks-cfg))
+               :services (services-map (:services config)
+                                       (:checks checks-cfg))
                :containers {}})
   ;;(pprint @ctx)
 
