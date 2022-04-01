@@ -1,0 +1,16 @@
+{:source-paths ["src/" "test/"]
+
+ :dependencies [[funcool/promesa "8.0.450"]
+                [cljs-bean "1.8.0"]
+                [reagent "1.1.1"]]
+
+ :builds
+ {:dcmon
+  {:target :node-script
+   :main dcmon.core/-main
+   :output-to "build/dcmon.js"
+   :devtools {:enabled false :console.support false}
+
+   :compiler-options
+   {:optimizations :simple
+    :source-map-use-fs-paths true}}}}

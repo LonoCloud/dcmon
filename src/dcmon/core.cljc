@@ -1,5 +1,5 @@
 #!/usr/bin/env nbb
-(ns dcmon
+(ns dcmon.core
   (:require [clojure.string :as S]
             [clojure.pprint :refer [pprint]]
             [promesa.core :as P]
@@ -11,7 +11,9 @@
             ["neodoc" :as neodoc]
             ["ink" :refer [render Text Box]]
             ["js-yaml" :as yaml]
-            ["dockerode$default" :as Docker]))
+            #_["dockerode$default" :as Docker]))
+;; workaround (shadow-cljs issue?)
+(def Docker (js/require "dockerode"))
 
 (def usage "
 Usage:
@@ -31,6 +33,8 @@ Options:
 
 (def WAIT-EXEC-SLEEP 200)
 (def TICK-PERIOD 500 #_200)
+
+(set! *warn-on-infer* false)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Argument processing
@@ -432,51 +436,54 @@ Options:
         (event :docker-event (select-keys evt [:id :status])))
       (update-container docker (:id evt) start?))))
 
-(P/let [opts (parse-opts (or *command-line-args* (clj->js [])))
-        {:keys [project show-events no-tui timeout]} opts
-        show-events (when show-events
-                      (set (map #(keyword (second (re-find #":*(.+)" %)))
-                                (S/split show-events #"[, ]"))))
-        timeout (when-let [timeout (:timeout opts)] (js/parseInt timeout))
-        log-file-stream (when-let [log-file (:log-file opts)]
-                          (.createWriteStream fs log-file #js {:flags "w"}))
-        checks-bufs (P/all (for [f (:checks-file opts)] (slurp-buf f)))
-        checks-cfgs (map #(->clj (.load yaml %)) checks-bufs)
-        checks-cfg (reduce (fn [cfg {:keys [settings checks]}]
-                             (-> cfg
-                                 (update :settings merge settings)
-                                 (update :checks merge checks)))
-                           {:settings {} :checks {}}
-                           checks-cfgs)
-        check-len (apply max (map count (vals (:checks checks-cfg))))
-        settings (merge (:settings checks-cfg)
-                        opts
-                        {:show-events show-events
-                         :timeout timeout
-                         :start-time (js/Date.)
-                         :check-len check-len})
-        proj-filter {:label [(str "com.docker.compose.project=" project)]}
-        container-filter (obj->str proj-filter)
-        event-filter (obj->str (merge proj-filter {:type ["container"]}))
-        docker (Docker.)
-        containers (.listContainers docker (clj->js {:all true
-                                                     :filters container-filter}))
-        event-obj (.getEvents docker (clj->js {:filters event-filter}))]
+(defn -main [& argv]
+  (P/let [opts (parse-opts (or argv #js []))
+          {:keys [project show-events no-tui timeout]} opts
+          show-events (when show-events
+                        (set (map #(keyword (second (re-find #":*(.+)" %)))
+                                  (S/split show-events #"[, ]"))))
+          timeout (when-let [timeout (:timeout opts)] (js/parseInt timeout))
+          log-file-stream (when-let [log-file (:log-file opts)]
+                            (.createWriteStream fs log-file #js {:flags "w"}))
+          checks-bufs (P/all (for [f (:checks-file opts)] (slurp-buf f)))
+          checks-cfgs (map #(->clj (.load yaml %)) checks-bufs)
+          checks-cfg (reduce (fn [cfg {:keys [settings checks]}]
+                               (-> cfg
+                                   (update :settings merge settings)
+                                   (update :checks merge checks)))
+                             {:settings {} :checks {}}
+                             checks-cfgs)
+          check-len (apply max (map count (vals (:checks checks-cfg))))
+          settings (merge (:settings checks-cfg)
+                          opts
+                          {:show-events show-events
+                           :timeout timeout
+                           :start-time (js/Date.)
+                           :check-len check-len})
+          proj-filter {:label [(str "com.docker.compose.project=" project)]}
+          container-filter (obj->str proj-filter)
+          event-filter (obj->str (merge proj-filter {:type ["container"]}))
+          docker (Docker.)
+          containers (.listContainers docker (clj->js {:all true
+                                                       :filters container-filter}))
+          event-obj (.getEvents docker (clj->js {:filters event-filter}))]
 
-  (.on event-obj "data" (partial docker-event-handler opts docker))
+    (.on event-obj "data" (partial docker-event-handler opts docker))
 
-  (reset! ctx {:settings settings
-               :services {}
-               :containers {}
-               :checks (:checks checks-cfg)
-               :log-file-stream log-file-stream})
+    (reset! ctx {:settings settings
+                 :services {}
+                 :containers {}
+                 :checks (:checks checks-cfg)
+                 :log-file-stream log-file-stream})
 
-  (event :monitor-start {:settings settings})
+    (.on js/process "SIGINT" #(js/process.exit 130))
 
-  (doseq [container containers]
-    (update-container docker (.-Id container) true))
+    (event :monitor-start {:settings settings})
 
-  (when-not no-tui
-    (render (reagent/as-element [service-dom])))
+    (doseq [container containers]
+      (update-container docker (.-Id container) true))
 
-  (tick docker))
+    (when-not no-tui
+      (render (reagent/as-element [service-dom])))
+
+    (tick docker)))
