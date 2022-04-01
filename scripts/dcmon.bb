@@ -54,8 +54,10 @@ Options:
 
 (def slurp-buf (promisify (.-readFile fs)))
 
-;; async
-(defn wait-exec [exec]
+(defn wait-exec
+  "[Async] Wait for docker exec to complete and when complete resolve
+  to result of inspecting successful exec or reject with exec error."
+  [exec]
   (P/create
     (fn [resolve reject]
       (let [check-fn (atom nil)
@@ -68,8 +70,11 @@ Options:
                            (.inspect exec exec-cb)))
         (@check-fn)))))
 
-;; async
-(defn docker-exec [container command options]
+(defn docker-exec
+  "[Async] Exec a command in a container and wait for it to complete
+  (using wait-exec). Resolves to exec data with additional :Stdout and
+  and :Stderr keys."
+  [container command options]
   (P/let [cmd (if (string? command)
                 ["sh" "-c" command]
                 command)
@@ -96,14 +101,26 @@ Options:
 (defn obj->str [obj]
   (js/JSON.stringify (clj->js obj)))
 
-(defn log-regex [regexes]
-  (let [regexes (if (empty? regexes) [nil] regexes)
-        regexes (map-indexed #(str "(?<c" %1 ">" (or %2 "^\b$") ")") regexes)]
+(defn log-regex
+  "Construct a combined log regex using a sequence of regex strings.
+  The combined regex starts with a ISO data string followed by
+  anything followed by an alternation of the regex strings. Each
+  sub-regex string is is given a named group 'cIDX' where IDX is the
+  numeric index into the original regex-strs sequence."
+  [regex-strs]
+  (let [regex-strs (if (empty? regex-strs) [nil] regex-strs)
+        regex-strs (map-indexed #(str "(?<c" %1 ">" (or %2 "^\b$") ")")
+                                regex-strs)]
     (js/RegExp. (str "^(20[0-9-]+T[0-9:.]+Z)\\s+.*("
-                     (S/join "|" regexes) ")") "m")))
+                     (S/join "|" regex-strs) ")") "m")))
 
-(defn log-regex-match [re s]
-  (when-let [match (.match s re)]
+(defn log-regex-match
+  "Takes a log-regex (generated using log-regex) and a string to match
+  against and returns '{:ts ts :cindex cindex}' where 'ts' is the date
+  string and 'cindex' is the the index of the sub-regex string that
+  matches."
+  [lre s]
+  (when-let [match (.match s lre)]
     (let [ts (second match)
           cindex (-> match
                      .-groups
@@ -208,8 +225,12 @@ Options:
                [:> Text {} " "])]
             (bar (str service "/" cidx "/" check-idx))))])]))
 
-;; async
-(defn event-logger [kind data]
+(defn event-logger
+  "[Async] Takes an event kind and event data and conditional prints
+  it out (depending on show event configuration) and also write it to
+  the log stream (if set). If the event data contains a ':ts' key then
+  this is used as the timestamp otherwise the current time is used."
+  [kind data]
   (let [{:keys [log-file-stream settings]} @ctx
         {:keys [show-events]} settings
         {:keys [service cidx finished]} data
@@ -221,8 +242,13 @@ Options:
       ;; Returns a promise
       (.write log-file-stream (str ts " " kind " " data "\n")))))
 
-;; async
-(defn event [kind data]
+(defn event
+  "[Async] Handles an event. First the event kind and data is logged
+  and then if the kind of event is an completion event then the
+  process exits with an error code depending on the reason for the
+  exit and the whether the finished condition for the checks has been
+  reached. "
+  [kind data]
   (P/let [res (event-logger kind data)]
     ;; cases where we exit after event-logger completes
     (condp = kind
@@ -236,7 +262,12 @@ Options:
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Main
 
-(defn deps-fulfilled? [services deps]
+(defn deps-fulfilled?
+  "Checks a deps map against the services map. For each service key in
+  the deps map, it checks to see if the check ID (the value) has been
+  completed successfully in the services map. If all deps have been
+  completed successfully then return true, otherwise false."
+  [services deps]
   (and
     (every? #(get services %) (keys deps))
     (every?
@@ -245,7 +276,12 @@ Options:
             [cidx {:keys [checks]}] (get services service)]
         (every? :done? (filter #(= check-id (:id %)) checks))))))
 
-(defn tick [docker]
+(defn tick
+  "Periodic worker. Checks for the finished and timeout conditions and
+  exits if so. Also launches command checks for any command checks
+  that have all their deps fullfilled, that are themselves
+  unfullfilled, and that don't already have a command check running."
+  [docker]
   (js/setTimeout #(tick docker) TICK-PERIOD)
   (let [{:keys [settings services containers]} @ctx
         {:keys [keep-running finished start-time timeout]} settings
@@ -284,10 +320,13 @@ Options:
                  #(-> %
                       (dissoc :exec)
                       (assoc :result result)
-                      (assoc :done? (= 0 (:ExitCode result))))))))
-    ))
+                      (assoc :done? (= 0 (:ExitCode result))))))))))
 
-(defn docker-log-handler [service cidx chnk]
+(defn docker-log-handler
+  "Handle docker container log messages. Count the number of received
+  logs for this container. If the log message matches a log check then
+  mark it done."
+  [service cidx chnk]
   (let [{:keys [services]} @ctx
         {:keys [checks log-lines log-regex]} (get-in services [service cidx])
         log (.toString chnk "utf8")
@@ -312,8 +351,8 @@ Options:
 
 (defn ensure-service
   "Creates service/cidx definition if one doesn't exist that container
-  the combined log regex and other default vaules set.
-  Returns ctx (updated with service/cidx)"
+  the combined log regex and other default vaules set.  Returns ctx
+  (updated with service/cidx)"
   [service cidx]
   (swap! ctx #(if (get-in % [:services service cidx])
                 %
@@ -324,8 +363,10 @@ Options:
                              :log-regex (log-regex (map :regex checks))
                              :checks (vec checks)})))))
 
-;; async: resolves to ctx
-(defn init-container [service cidx container log-handler]
+(defn init-container
+  "[Async] Configure log monitoring for a newly detected or newly
+  running container. Resolves to the updated state of ctx."
+  [service cidx container log-handler]
   (let [{:keys [services]} @ctx
         old-stream (get-in services [service cidx :log-stream])
         log-stream (doto (stream/PassThrough.)
@@ -346,8 +387,13 @@ Options:
       (.on stream "end" #(.end log-stream "!stop!"))
       (swap! ctx assoc-in [:services service cidx :log-stream] stream))))
 
-;; async
-(defn update-container [docker id start?]
+(defn update-container
+  "[Async] A container we are tracking has changed state. Inspect the
+  container and update the ':services' and ':containers' keys in ctx.
+  If the container is not running the clear the check results for that
+  service and container index. If the container is new or newly
+  detected, then initialize its state."
+  [docker id start?]
   (P/catch
     (P/let [container (.getContainer docker id)
             inspect-raw (.inspect container)
@@ -356,8 +402,6 @@ Options:
             service (keyword (-> inspect :Config :Labels :com.docker.compose.service))
             cidx (js/parseInt (-> inspect :Config :Labels :com.docker.compose.container-number))
             {:keys [services]} (ensure-service service cidx)]
-      ;;(prn :updating :service service :cidx cidx
-      ;;     :state (-> inspect :State :Status) :start? start? :id id)
       (swap! ctx #(-> %
                       (assoc-in [:containers id] inspect)
                       (assoc-in [:services service cidx :id] id)))
@@ -375,8 +419,9 @@ Options:
           (event :error {:id id :error (->clj err)})
           (prn :error :id id :error (->clj err)))))))
 
-;; async
-(defn docker-event-handler [opts docker evt-buf]
+(defn docker-event-handler
+  "[Async] Log and handle docker container events."
+  [opts docker evt-buf]
   (let [{:keys [verbose-events]} opts
         evt (->clj (js/JSON.parse (.toString evt-buf "utf8")))
         status (:status evt)
@@ -425,9 +470,6 @@ Options:
                :containers {}
                :checks (:checks checks-cfg)
                :log-file-stream log-file-stream})
-  ;;(pprint @ctx)
-  ;;(prn :show-events show-events)
-  ;;(js/process.exit 1)
 
   (event :monitor-start {:settings settings})
 
