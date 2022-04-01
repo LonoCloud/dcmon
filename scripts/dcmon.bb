@@ -23,6 +23,7 @@ Options:
   --log-file LOG-FILE    Output all events to LOG-FILE
   --show-events EVTS     Output events to the screen
                          EVTS is comma separate list of events types or 'all'
+  --verbose-events       Show full docker events
   --no-tui               Disable TUI (ink/React) visual representation
   --timeout TIMEOUT      Timeout after TIMEOUT seconds
                          (exit with error if not in finished state)
@@ -375,12 +376,15 @@ Options:
           (prn :error :id id :error (->clj err)))))))
 
 ;; async
-(defn docker-event-handler [docker evt-buf]
-  (let [evt (->clj (js/JSON.parse (.toString evt-buf "utf8")))
+(defn docker-event-handler [opts docker evt-buf]
+  (let [{:keys [verbose-events]} opts
+        evt (->clj (js/JSON.parse (.toString evt-buf "utf8")))
         status (:status evt)
         start? (= "start" status)]
     (when (not= "exec_" (.substr status 0 5))
-      (event :docker-event {:event evt})
+      (if verbose-events
+        (event :docker-event evt)
+        (event :docker-event (select-keys evt [:id :status])))
       (update-container docker (:id evt) start?))))
 
 (P/let [opts (parse-opts (or *command-line-args* (clj->js [])))
@@ -414,7 +418,7 @@ Options:
                                                      :filters container-filter}))
         event-obj (.getEvents docker (clj->js {:filters event-filter}))]
 
-  (.on event-obj "data" (partial docker-event-handler docker))
+  (.on event-obj "data" (partial docker-event-handler opts docker))
 
   (reset! ctx {:settings settings
                :services {}
