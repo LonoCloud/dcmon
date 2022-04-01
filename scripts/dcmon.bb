@@ -6,7 +6,6 @@
             [cljs-bean.core :refer [->clj]]
             [reagent.core :as reagent]
             ["fs" :as fs]
-            ["child_process" :as child-process]
             ["util" :refer [promisify]]
             ["stream" :as stream]
             ["neodoc" :as neodoc]
@@ -21,15 +20,16 @@ Usage:
 Options:
   --verbose              Verbose output [env: VERBOSE]
   --keep-running         Don't exit when done setting is reached
-  --log-file LOG-FILE    Output events to LOG-FILE
-  --show-events          Output events to the screen
-  --only-events          Only output events to screen (no TUI)
+  --log-file LOG-FILE    Output all events to LOG-FILE
+  --show-events EVTS     Output events to the screen
+                         EVTS is comma separate list of events types or 'all'
+  --no-tui               Disable TUI (ink/React) visual representation
   --timeout TIMEOUT      Timeout after TIMEOUT seconds
                          (exit with error if not in finished state)
 ")
 
 (def WAIT-EXEC-SLEEP 200)
-(def TICK-PERIOD 1000 #_200)
+(def TICK-PERIOD 500 #_200)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Argument processing
@@ -51,13 +51,7 @@ Options:
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; General utility functions
 
-(def exec (promisify (.-exec child-process)))
 (def slurp-buf (promisify (.-readFile fs)))
-
-;; async
-(defn compose-config []
-  (P/let [res (exec "docker-compose config")]
-    (js->clj (.load yaml (:stdout (->clj res))) :keywordize-keys true)))
 
 ;; async
 (defn wait-exec [exec]
@@ -65,10 +59,6 @@ Options:
     (fn [resolve reject]
       (let [check-fn (atom nil)
             exec-cb (fn [err data]
-                      ;;(prn :exec-cb :err err
-                      ;;     :Running (.-Running data)
-                      ;;     :ExitCode (.-ExitCode data)
-                      ;;     :Pid (.-Pid data))
                       (if err (reject err)
                         (if (.-Running data)
                           (js/setTimeout @check-fn WAIT-EXEC-SLEEP)
@@ -127,7 +117,8 @@ Options:
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; UI (ink/reagent) and Logging
 
-;; {:services   {S-NAME {C-IDX {:id C-ID
+;; {:settings   CONFIG-SETTINGS
+;;  :services   {S-NAME {C-IDX {:id C-ID
 ;;                              :log-stream LOG-STREAM
 ;;                              :log-lines COUNT-OF-LOG-LINES
 ;;                              :log-regex COMBINED-LOG-REGEX
@@ -140,7 +131,9 @@ Options:
 ;;                                        :deps {S-NAME CHECK-ID}
 ;;                                        :exec EXEC-PROMISE
 ;;                                        :result EXEC-RESULT}]}}}
-;;  :containers {C-ID INSPECT-DATA}}
+;;  :containers {C-ID INSPECT-DATA}
+;;  :checks     SERVICE-CHECKS
+;;  :log-file-stream LOG-FILE-STREAM}
 (defonce ctx (reagent/atom {}))
 
 ;; https://github.com/vadimdemedes/ink
@@ -191,13 +184,13 @@ Options:
      ;; Data Rows
      (for [[service cstates] sorted-services
            [cidx {:keys [id log-lines checks] :as cstate}] cstates
-           :let [;;_ (prn :cidx cidx :cstate cstate)
-                 {Name :Name {Status :Status} :State} (get containers id)
+           :let [{Name :Name {Status :Status} :State} (get containers id)
+                 cname (str (name service) "_" cidx)
                  svc-color (service-color Status)]]
        [:> Box {:key (str service "/" cidx) :flexDirection "row"}
         (bar 1)
         [:> Box {:width (:service WIDTHS)}
-         [:> Text {:color svc-color :wrap "truncate"} (name service)]]
+         [:> Text {:color svc-color :wrap "truncate"} cname]]
         (bar 2)
         [:> Box {:width (:status WIDTHS)}
          [:> Text {:color svc-color :wrap "truncate"} (or Status "unknown")]]
@@ -216,16 +209,16 @@ Options:
 
 ;; async
 (defn event-logger [kind data]
-  (let [{:keys [log-stream settings]} @ctx
-        {:keys [show-events?]} settings
+  (let [{:keys [log-file-stream settings]} @ctx
+        {:keys [show-events]} settings
         {:keys [service cidx finished]} data
         ;; TODO: should be timestamp from log match
         ts (or (:ts data) (.toISOString (js/Date.)))]
-    (when show-events?
+    (when (or (get show-events kind) (= #{:all} show-events))
       (println (str ts " " kind " "  data)))
-    (when log-stream
+    (when log-file-stream
       ;; Returns a promise
-      (.write log-stream (str ts " " kind " " data "\n")))))
+      (.write log-file-stream (str ts " " kind " " data "\n")))))
 
 ;; async
 (defn event [kind data]
@@ -243,11 +236,13 @@ Options:
 ;; Main
 
 (defn deps-fulfilled? [services deps]
-  (every?
-    identity
-    (for [[service check-id] deps
-          [cidx {:keys [checks]}] (get services service)]
-      (every? :done? (filter #(= check-id (:id %)) checks)))))
+  (and
+    (every? #(get services %) (keys deps))
+    (every?
+      identity
+      (for [[service check-id] deps
+            [cidx {:keys [checks]}] (get services service)]
+        (every? :done? (filter #(= check-id (:id %)) checks))))))
 
 (defn tick [docker]
   (js/setTimeout #(tick docker) TICK-PERIOD)
@@ -288,7 +283,8 @@ Options:
                  #(-> %
                       (dissoc :exec)
                       (assoc :result result)
-                      (assoc :done? (= 0 (:ExitCode result))))))))))
+                      (assoc :done? (= 0 (:ExitCode result))))))))
+    ))
 
 (defn docker-log-handler [service cidx chnk]
   (let [{:keys [services]} @ctx
@@ -298,9 +294,12 @@ Options:
         new-checks (if match
                      (let [{:keys [ts cindex]} match
                            check (get checks cindex)]
-                       (event :log-match {:service service :cidx cidx
-                                          :check check :ts ts})
-                       (assoc-in checks [cindex :done?] true))
+                       (if (not (:done? check))
+                         (do
+                           (event :log-match {:service service :cidx cidx
+                                              :check check :ts ts})
+                           (assoc-in checks [cindex :done?] true))
+                         checks))
                      checks)]
     (swap! ctx update-in [:services service cidx]
            merge {:log-lines (inc log-lines)
@@ -310,14 +309,29 @@ Options:
   (swap! ctx update-in [:services service cidx :checks]
          #(vec (map (fn [cs] (dissoc cs :done? :result :exec)) %))))
 
-;; async
+(defn ensure-service
+  "Creates service/cidx definition if one doesn't exist that container
+  the combined log regex and other default vaules set.
+  Returns ctx (updated with service/cidx)"
+  [service cidx]
+  (swap! ctx #(if (get-in % [:services service cidx])
+                %
+                (let [checks (get-in % [:checks service])]
+                  (assoc-in % [:services service cidx]
+                            {:id nil
+                             :log-lines 0
+                             :log-regex (log-regex (map :regex checks))
+                             :checks (vec checks)})))))
+
+;; async: resolves to ctx
 (defn init-container [service cidx container log-handler]
   (let [{:keys [services]} @ctx
         old-stream (get-in services [service cidx :log-stream])
         log-stream (doto (stream/PassThrough.)
                      (.on "data" log-handler))]
+    (event :container-init {:service service :cidx cidx :id (.-id container)
+                            :recreate-stream? (if old-stream true false)})
     (when old-stream
-      ;;(prn :DESTROY-STREAM :id (.-id container) :service service :cidx cidx)
       (.destroy old-stream)
       (swap! ctx update-in [:services service cidx] merge {:log-stream nil
                                                            :log-lines 0})
@@ -329,68 +343,54 @@ Options:
       (-> (.-modem container)
           (.demuxStream stream log-stream log-stream))
       (.on stream "end" #(.end log-stream "!stop!"))
-      ;;(prn :CREATE-LOG-STREAM :id (.-id container) :service service :cidx cidx)
-      (swap! ctx assoc-in [:services service cidx :log-stream] stream)
-      true)))
+      (swap! ctx assoc-in [:services service cidx :log-stream] stream))))
 
 ;; async
 (defn update-container [docker id start?]
-  (let [{:keys [services containers]} @ctx]
-    (P/catch
-      (P/let [container (.getContainer docker id)
-              inspect-raw (.inspect container)
-              inspect (->clj inspect-raw)
-              status (-> inspect :State :Status)
-              service (keyword (-> inspect :Config :Labels :com.docker.compose.service))
-              cidx (js/parseInt (-> inspect :Config :Labels :com.docker.compose.container-number))]
-        (when (contains? services service)
-          ;;(prn :updating :service service :cidx cidx
-          ;;     :state (-> inspect :State :Status) :start? start? :id id)
-          (swap! ctx #(-> %
-                          (assoc-in [:containers id] inspect)
-                          (assoc-in [:services service cidx :id] id)))
-          (when (not= "running" status)
-            (clear-checks service cidx))
-          (when start?
-            (event :container-init {:service service :cidx cidx
-                                    :status status :id id})
-            (init-container service cidx container
-                            (partial docker-log-handler service cidx)))))
-      (fn [err]
-        ;;(prn :statuscode (.-statusCode err))
-        (if (= 404 (.-statusCode err))
-          (event :container-not-found {:id id})
-          ;;(swap! ctx assoc-in [:containers id :State :Status] "unknown")
+  (P/catch
+    (P/let [container (.getContainer docker id)
+            inspect-raw (.inspect container)
+            inspect (->clj inspect-raw)
+            status (-> inspect :State :Status)
+            service (keyword (-> inspect :Config :Labels :com.docker.compose.service))
+            cidx (js/parseInt (-> inspect :Config :Labels :com.docker.compose.container-number))
+            {:keys [services]} (ensure-service service cidx)]
+      ;;(prn :updating :service service :cidx cidx
+      ;;     :state (-> inspect :State :Status) :start? start? :id id)
+      (swap! ctx #(-> %
+                      (assoc-in [:containers id] inspect)
+                      (assoc-in [:services service cidx :id] id)))
+      (when (not= "running" status)
+        (clear-checks service cidx))
+      (if start?
+        (init-container service cidx container
+                        (partial docker-log-handler service cidx))
+        (event :container-update {:service service :cidx cidx :id id
+                                  :status status})))
+    (fn [err]
+      (if (.-statusCode err)
+        (event :docker-error {:id id :status-code (.-statusCode err)})
+        (do
+          (event :error {:id id :error (->clj err)})
           (prn :error :id id :error (->clj err)))))))
 
 ;; async
-(defn dc-event-handler [docker evt-buf]
+(defn docker-event-handler [docker evt-buf]
   (let [evt (->clj (js/JSON.parse (.toString evt-buf "utf8")))
-        start? (= "start" (:status evt))]
-    ;;(prn :event :evt evt :start? start?)
-    (update-container docker (:id evt) start?)))
-
-
-(defn services-map
-  "Add checks and defaults to each service (defined in compose config).
-  Create a top-level combined regex of checks for each service."
-  [services checks]
-  (into {} (for [[service {:keys [scale]}] services]
-             [service
-              (into {} (for [cidx (range 1 (inc (or scale 1)))]
-                         [cidx
-                          {:id nil
-                           :log-lines 0
-                           :log-regex (log-regex (map :regex (get checks service)))
-                           :checks (vec (get checks service))}]))])))
-
+        status (:status evt)
+        start? (= "start" status)]
+    (when (not= "exec_" (.substr status 0 5))
+      (event :docker-event {:event evt})
+      (update-container docker (:id evt) start?))))
 
 (P/let [opts (parse-opts (or *command-line-args* (clj->js [])))
-        project (:project opts)
-        show-events? (or (:show-events opts) (:only-events opts))
+        {:keys [project show-events no-tui timeout]} opts
+        show-events (when show-events
+                      (set (map #(keyword (second (re-find #":*(.+)" %)))
+                                (S/split show-events #"[, ]"))))
         timeout (when-let [timeout (:timeout opts)] (js/parseInt timeout))
-        log-stream (when-let [log-file (:log-file opts)]
-                    (.createWriteStream fs log-file #js {:flags "w"}))
+        log-file-stream (when-let [log-file (:log-file opts)]
+                          (.createWriteStream fs log-file #js {:flags "w"}))
         checks-bufs (P/all (for [f (:checks-file opts)] (slurp-buf f)))
         checks-cfgs (map #(->clj (.load yaml %)) checks-bufs)
         checks-cfg (reduce (fn [cfg {:keys [settings checks]}]
@@ -402,11 +402,10 @@ Options:
         check-len (apply max (map count (vals (:checks checks-cfg))))
         settings (merge (:settings checks-cfg)
                         opts
-                        {:check-len check-len
-                         :show-events? show-events?
+                        {:show-events show-events
+                         :timeout timeout
                          :start-time (js/Date.)
-                         :timeout timeout})
-        config (compose-config)
+                         :check-len check-len})
         proj-filter {:label [(str "com.docker.compose.project=" project)]}
         container-filter (obj->str proj-filter)
         event-filter (obj->str (merge proj-filter {:type ["container"]}))
@@ -415,20 +414,15 @@ Options:
                                                      :filters container-filter}))
         event-obj (.getEvents docker (clj->js {:filters event-filter}))]
 
-  (.on event-obj "data" (partial dc-event-handler docker))
-  ;;(prn :opts opts)
-  ;;(prn :project project)
-  ;;(prn :services services)
-  ;;(pprint services)
-  ;;(prn :containers (map :Id (->clj containers)))
-  ;;(prn :check-len check-len)
+  (.on event-obj "data" (partial docker-event-handler docker))
 
   (reset! ctx {:settings settings
-               :log-stream log-stream
-               :services (services-map (:services config)
-                                       (:checks checks-cfg))
-               :containers {}})
+               :services {}
+               :containers {}
+               :checks (:checks checks-cfg)
+               :log-file-stream log-file-stream})
   ;;(pprint @ctx)
+  ;;(prn :show-events show-events)
   ;;(js/process.exit 1)
 
   (event :monitor-start {:settings settings})
@@ -436,7 +430,7 @@ Options:
   (doseq [container containers]
     (update-container docker (.-Id container) true))
 
-  (when-not (:only-events opts)
+  (when-not no-tui
     (render (reagent/as-element [service-dom])))
 
   (tick docker))
