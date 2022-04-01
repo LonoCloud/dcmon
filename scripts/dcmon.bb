@@ -16,11 +16,10 @@
 
 (def usage "
 Usage:
-  dcmon [options] <CHECKS-FILE>
+  dcmon [options] <project> <checks-file>...
 
 Options:
   --verbose              Verbose output [env: VERBOSE]
-  -p --project PROJECT   Compose project name [env: PROJECT]
   --keep-running         Don't exit when done setting is reached
   --log-file LOG-FILE    Output events to LOG-FILE
   --show-events          Output events to the screen
@@ -54,15 +53,6 @@ Options:
 
 (def exec (promisify (.-exec child-process)))
 (def slurp-buf (promisify (.-readFile fs)))
-
-;; async
-(defn compose-project []
-  (P/let [res (exec "docker-compose --verbose logs --tail=0")
-          stderr (:stderr (->clj res))
-          project (-> (re-seq #"'com.docker.compose.project=([^']*)'" stderr)
-                      first
-                      second)]
-    project))
 
 ;; async
 (defn compose-config []
@@ -396,12 +386,19 @@ Options:
 
 
 (P/let [opts (parse-opts (or *command-line-args* (clj->js [])))
-        checks-buf (slurp-buf (:CHECKS-FILE opts))
+        project (:project opts)
         show-events? (or (:show-events opts) (:only-events opts))
         timeout (when-let [timeout (:timeout opts)] (js/parseInt timeout))
         log-stream (when-let [log-file (:log-file opts)]
                     (.createWriteStream fs log-file #js {:flags "w"}))
-        checks-cfg (->clj (.load yaml checks-buf))
+        checks-bufs (P/all (for [f (:checks-file opts)] (slurp-buf f)))
+        checks-cfgs (map #(->clj (.load yaml %)) checks-bufs)
+        checks-cfg (reduce (fn [cfg {:keys [settings checks]}]
+                             (-> cfg
+                                 (update :settings merge settings)
+                                 (update :checks merge checks)))
+                           {:settings {} :checks {}}
+                           checks-cfgs)
         check-len (apply max (map count (vals (:checks checks-cfg))))
         settings (merge (:settings checks-cfg)
                         opts
@@ -410,7 +407,6 @@ Options:
                          :start-time (js/Date.)
                          :timeout timeout})
         config (compose-config)
-        project (or (:project opts) (compose-project))
         proj-filter {:label [(str "com.docker.compose.project=" project)]}
         container-filter (obj->str proj-filter)
         event-filter (obj->str (merge proj-filter {:type ["container"]}))
