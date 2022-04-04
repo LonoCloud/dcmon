@@ -307,7 +307,7 @@ Options:
             [cidx {container-id :id checks :checks}] svc-states
             :let [{{:keys [Status]} :State} (get containers container-id)]
             :when (= "running" Status)
-            [check-idx {:keys [cmd done? deps exec]}] (map-indexed vector checks)
+            [check-idx {:keys [cmd done? deps exec] :as check}] (map-indexed vector checks)
             :when (and cmd
                        (not done?)
                        (not exec)
@@ -317,31 +317,39 @@ Options:
         (event :start-exec {:service service :cidx cidx :cmd cmd})
         (swap! ctx assoc-in [:services service cidx :checks check-idx :exec] exec)
         (P/let [result-raw exec
-                result (->clj result-raw)]
+                result (->clj result-raw)
+                exit-code (:ExitCode result)
+                check (-> check
+                          (dissoc :exec)
+                          (assoc :result result)
+                          (assoc :done? (= 0 exit-code)))  ]
           (event :finish-exec {:service service :cidx cidx
-                               :cmd cmd :exec-code (:ExitCode result)})
-          (swap! ctx update-in [:services service cidx :checks check-idx]
-                 #(-> %
-                      (dissoc :exec)
-                      (assoc :result result)
-                      (assoc :done? (= 0 (:ExitCode result))))))))))
+                               :check check})
+          (when (= 0 exit-code)
+            (event :check-done {:service service :cidx cidx
+                                :check (dissoc check :result)}))
+          (swap! ctx assoc-in [:services service cidx :checks check-idx] check))))))
 
 (defn docker-log-handler
   "Handle docker container log messages. Count the number of received
   logs for this container. If the log message matches a log check then
   mark it done."
   [service cidx chnk]
-  (let [{:keys [services]} @ctx
-        {:keys [checks log-lines log-regex]} (get-in services [service cidx])
+  (let [{:keys [services containers]} @ctx
+        {:keys [id checks log-lines log-regex]} (get-in services [service cidx])
         log (.toString chnk "utf8")
         match (log-regex-match log-regex log)
         new-checks (if match
                      (let [{:keys [ts cindex]} match
-                           check (get checks cindex)]
-                       (if (not (:done? check))
+                           check (get checks cindex)
+                           {{:keys [Status]} :State} (get containers id)]
+                       (when (= "running" Status)
+                         (event :log-match {:service service :cidx cidx
+                                            :check check :ts ts}))
+                       (if (and (not (:done? check)) (= "running" Status))
                          (do
-                           (event :log-match {:service service :cidx cidx
-                                              :check check :ts ts})
+                           (event :check-done {:service service :cidx cidx :ts ts
+                                               :check (assoc check :done? true)})
                            (assoc-in checks [cindex :done?] true))
                          checks))
                      checks)]
