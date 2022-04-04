@@ -435,7 +435,11 @@ Options:
   "[Async] Log and handle docker container events."
   [opts docker evt-buf]
   (let [{:keys [verbose-events]} opts
-        evt (->clj (js/JSON.parse (.toString evt-buf "utf8")))
+        evt-str (.toString evt-buf "utf8")
+        evt (try (->clj (js/JSON.parse evt-str))
+                 (catch :default e nil
+                   (event :docker-error {:invalid-event evt-str})
+                   nil))
         status (:status evt)
         start? (= "start" status)]
     (when (not= "exec_" (.substr status 0 5))
