@@ -378,13 +378,14 @@ Options:
 (defn init-container
   "[Async] Configure log monitoring for a newly detected or newly
   running container. Resolves to the updated state of ctx."
-  [service cidx container log-handler]
+  [service cidx container status log-handler]
   (let [{:keys [services]} @ctx
         old-stream (get-in services [service cidx :log-stream])
         log-stream (doto (stream/PassThrough.)
                      (.on "data" log-handler))]
-    (event :container-init {:service service :cidx cidx :id (.-id container)
-                            :recreate-stream? (if old-stream true false)})
+    (when (= "running" status)
+      (event :container-running {:service service :cidx cidx :id (.-id container)
+                                 :recreate-stream? (if old-stream true false)}))
     (when old-stream
       (.destroy old-stream)
       (swap! ctx update-in [:services service cidx] merge {:log-stream nil
@@ -405,7 +406,7 @@ Options:
   If the container is not running the clear the check results for that
   service and container index. If the container is new or newly
   detected, then initialize its state."
-  [docker id start?]
+  [docker id init?]
   (P/catch
     (P/let [container (.getContainer docker id)
             inspect-raw (.inspect container)
@@ -419,8 +420,8 @@ Options:
                       (assoc-in [:services service cidx :id] id)))
       (when (not= "running" status)
         (clear-checks service cidx))
-      (if start?
-        (init-container service cidx container
+      (if init?
+        (init-container service cidx container status
                         (partial docker-log-handler service cidx))
         (event :container-update {:service service :cidx cidx :id id
                                   :status status})))
@@ -441,12 +442,12 @@ Options:
                    (event :docker-error {:invalid-event evt-str})
                    nil))
         status (:status evt)
-        start? (= "start" status)]
+        init? (= "start" status)]
     (when (not= "exec_" (.substr status 0 5))
       (if verbose-events
         (event :docker-event evt)
         (event :docker-event (select-keys evt [:id :status])))
-      (update-container docker (:id evt) start?))))
+      (update-container docker (:id evt) init?))))
 
 (defn -main [& argv]
   (P/let [opts (parse-opts (or argv #js []))
