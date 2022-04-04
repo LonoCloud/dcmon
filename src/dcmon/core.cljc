@@ -256,8 +256,8 @@ Options:
   (P/let [res (event-logger kind data)]
     ;; cases where we exit after event-logger completes
     (condp = kind
-      :finished (when-not (-> @ctx :settings :keep-running)
-                  (js/process.exit 0))
+      :finish (when-not (-> @ctx :settings :keep-running)
+                (js/process.exit 0))
 
       :timeout (js/process.exit (:exit-code data))
 
@@ -294,7 +294,7 @@ Options:
                (not (:fired? finished))  ;; only once
                (deps-fulfilled? services finished))
       (swap! ctx assoc-in [:settings :finished :fired?] true)
-      (event :finished {:finished finished}))
+      (event :finish {:finished finished}))
 
     (when (and timeout
                (>= (- cur-time start-time) (* 1000 timeout)))
@@ -478,7 +478,7 @@ Options:
 
     (.on js/process "SIGINT" #(js/process.exit 130))
 
-    (event :monitor-start {:settings settings})
+    (event :start {:settings settings})
 
     (doseq [container containers]
       (update-container docker (.-Id container) true))
