@@ -237,9 +237,9 @@ Options:
   [kind data]
   (let [{:keys [log-file-stream settings]} @ctx
         {:keys [show-events]} settings
-        {:keys [service cidx finished]} data
+        {:keys [service cidx finished ts]} data
         ;; TODO: should be timestamp from log match
-        ts (or (:ts data) (.toISOString (js/Date.)))]
+        ts (.toISOString (if ts (js/Date. ts) (js/Date.)))]
     (when (or (get show-events kind) (= #{:all} show-events))
       (println (str ts " " kind " "  data)))
     (when log-file-stream
