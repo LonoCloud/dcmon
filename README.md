@@ -2,7 +2,7 @@
 
 Monitor docker-compose services.
 
-## Running it
+## Usage
 
 * Run with nbb (interpreted):
 
@@ -26,6 +26,24 @@ chmod +x build/dcmon.js
 docker build -t dcmon .
 docker run -it --rm -v /var/run/docker.sock:/var/run/docker.sock -v $(pwd)/checks.yaml:/app/checks.yaml dcmon PROJECT /app/checks.yaml
 ```
+
+## Example:
+
+The compose file at `examples/docker-compose.yaml` containers several
+compose services that behave in different ways. The checks file at
+`examples/checks.yaml` has example check definitions for each of the
+services in the compose file.
+
+In one terminal, launch dcmon as described above using a PROJECT value
+of `${USER}-test`.
+
+In a second terminal, launch the compose file:
+```
+docker-compose -p ${USER}-test -f examples/docker-compose.yaml up --force-recreate
+```
+
+In the dcmon terminal a visual representation of the service
+containers and the checks will be shown.
 
 ## Copyright & License
 

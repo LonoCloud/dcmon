@@ -1,0 +1,40 @@
+settings:
+  finished: {final: "ping"}
+
+checks:
+  exit0:
+    - {id: "sleeping", regex: "sleeping "}
+    - {id: "exiting",  regex: "exiting with "}
+  exit0-re:
+    - {id: "sleeping", regex: "sleeping "}
+    - {id: "exiting",  regex: "exiting with "}
+  exit1:
+    - {id: "sleeping", regex: "sleeping "}
+    - {id: "exiting",  regex: "exiting with "}
+  exit7:
+    - {id: "sleeping", regex: "sleeping "}
+    - {id: "exiting",  regex: "exiting with "}
+
+  scale:
+    - {id: "Started",  regex: "Started"}
+
+  counter:
+    - {id: "Started",  regex: "Started"}
+    - {id: "Line 5",   regex: "Line 5\\b"}
+    - {id: "Line 10",  regex: "Line 10\\b"}
+    - {id: "Line 15",  regex: "Line 15\\b"}
+    - {id: "Line 20",  regex: "Line 20\\b"}
+    - {id: "ping",     cmd: "ping -c 1 8.8.8.8",
+                       deps: {counter: "Line 20"}}
+
+  final:
+    - {id: "Started",  regex: "Started"}
+    - {noop: true}  # visual spacers
+    - {noop: true}
+    - {noop: true}
+    - {noop: true}
+    - {noop: true}
+    - {id: "ping",     cmd: "ping -c 1 8.8.8.8",
+                       deps: {scale:   "Started",
+                              counter: "ping",
+                              final:   "Started"}}
