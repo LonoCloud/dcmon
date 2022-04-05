@@ -26,7 +26,7 @@ Options:
   --show-events EVTS     Output events to the screen [default: 'none']
                          EVTS is comma separated list of events types or 'all'
   --columns COLS         COLS is comma separated list of columns to display
-                         [default: 'container,status,logs,checks']
+                         [default: 'container,logs,checks']
   --verbose-events       Show full docker events
   --no-tui               Disable TUI (ink/React) visual representation
   --timeout TIMEOUT      Timeout after TIMEOUT seconds
@@ -34,7 +34,7 @@ Options:
 ")
 
 (def WAIT-EXEC-SLEEP 200)
-(def TICK-PERIOD 500 #_200)
+(def TICK-PERIOD 500)
 
 (set! *warn-on-infer* false)
 
@@ -171,29 +171,41 @@ Options:
 ;; https://css-tricks.com/almanac/properties/f/flex-direction/
 (def WIDTHS {:container 15
              :status 7
+             :code 4
              :logs 5
              :checks 10})
 
-(defn container-color [status]
-  (get {"created" "yellow"
-        "running" "green"
-        "exited"  "red"} status "grey"))
+(def header-style {:color "blue" :bold true})
 
-(defn log-color [service-status {:keys [done? result exec] :as check}]
+(defn container-style [Status ExitCode]
+  (condp = Status
+    "created" {:color "yellow"}
+    "running" {:color "green" :bold true}
+    "exited"  {:color (if (= 0 ExitCode) "#004000" "#700000")}
+    {:color "grey"}))
+
+(defn status-style [Status ExitCode]
+  (condp = Status
+    "created" {:color "yellow"}
+    "running" {:color "green"}
+    "exited"  {:color (if (= 0 ExitCode) "#004000" "#700000")}
+    {:color "grey"}))
+
+(defn check-style [service-status {:keys [done? result exec] :as check}]
   (cond
-    (not= "running" service-status) "grey"
-    done?                           "green"
-    (= 0 (:ExitCode result))        "green"
-    exec                            "yellow"
-    :else                           "black"))
+    (not= "running" service-status) {:color "grey"}
+    done?                           {:color "green"}
+    (= 0 (:ExitCode result))        {:color "green"}
+    exec                            {:color "yellow"}
+    :else                           {}))
 
 (defn bar [k]
   [:> Box {:key k :width 1}
    [:> Text {:color "grey"} "|"]])
 
-(defn cell [column text color]
+(defn cell [column text style]
   [:> Box {:width (get WIDTHS column)}
-   [:> Text {:color color :wrap "truncate"} text]])
+   [:> Text (merge style {:wrap "truncate"}) text]])
 
 (defn visual-table []
   (let [{:keys [settings services containers]} @ctx
@@ -207,40 +219,47 @@ Options:
      ;; Header Row
      [:> Box {:flexDirection "row"}
       (when (col? :container) (bar 1))
-      (when (col? :container) (cell :container "Container" "blue"))
+      (when (col? :container) (cell :container "Container" header-style))
       (when (col? :status)    (bar 2))
-      (when (col? :status)    (cell :status "Status" "blue"))
-      (when (col? :logs)      (bar 3))
-      (when (col? :logs)      (cell :logs "Logs" "blue"))
-      (when (col? :checks)    (bar 4))
-      (when (col? :checks)    (cell :checks "Checks" "blue"))
+      (when (col? :status)    (cell :status "Status" header-style))
+      (when (col? :code)      (bar 3))
+      (when (col? :code)      (cell :code "Code" header-style))
+      (when (col? :logs)      (bar 4))
+      (when (col? :logs)      (cell :logs "Logs" header-style))
+      (when (col? :checks)    (bar 5))
+      (when (col? :checks)    (cell :checks "Checks" header-style))
       (when (col? :checks)    [:> Box {:width pad-width}])
-      (bar 5)]
+      (bar 6)]
 
      ;; Container Rows
      (for [[service cstates] sorted-services
            [cidx {:keys [id log-lines checks] :as cstate}] cstates
-           :let [{Name :Name {Status :Status} :State} (get containers id)
+           :let [container (get containers id)
+                 {:keys [ExitCode ExitCode Status]} (get container :State)
                  status (or Status "unknown")
+                 exit-code (if (= "running" Status) " " ExitCode)
                  cname (str (name service) "_" cidx)
-                 svc-color (container-color status)]]
+                 con-style (container-style Status ExitCode)
+                 stat-style (status-style Status ExitCode)]]
        [:> Box {:key (str service "/" cidx) :flexDirection "row"}
         (when (col? :container) (bar 1))
-        (when (col? :container) (cell :container cname svc-color))
+        (when (col? :container) (cell :container cname con-style))
         (when (col? :status)    (bar 2))
-        (when (col? :status)    (cell :status status svc-color))
-        (when (col? :logs)      (bar 3))
-        (when (col? :logs)      (cell :logs log-lines "black"))
+        (when (col? :status)    (cell :status status stat-style))
+        (when (col? :code)      (bar 3))
+        (when (col? :code)      (cell :code exit-code stat-style))
+        (when (col? :logs)      (bar 4))
+        (when (col? :logs)      (cell :logs log-lines nil))
         (when (col? :checks)    (for [check-idx (range check-len)
                                       :let [{:keys [id] :as check} (get checks check-idx)
-                                            ckcolor (log-color status check)]]
+                                            ckstyle (check-style status check)]]
                                   (list
                                     (bar (str service "/" cidx "/" check-idx))
                                     [:> Box {:key check-idx}
                                      (if check
-                                       (cell :checks id ckcolor)
-                                       (cell :checks " " "black"))])))
-        (bar 5)])]))
+                                       (cell :checks id ckstyle)
+                                       (cell :checks " " {}))])))
+        (bar 6)])]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Logging
@@ -254,7 +273,6 @@ Options:
   (let [{:keys [log-file-stream settings]} @ctx
         {:keys [show-events]} settings
         {:keys [service cidx finished ts]} data
-        ;; TODO: should be timestamp from log match
         ts (.toISOString (if ts (js/Date. ts) (js/Date.)))]
     (when (or (get show-events kind) (= #{:all} show-events))
       (println (str ts " " kind " "  data)))
