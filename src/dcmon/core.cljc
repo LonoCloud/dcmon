@@ -23,8 +23,10 @@ Options:
   --verbose              Verbose output [env: VERBOSE]
   --keep-running         Don't exit when done setting is reached
   --log-file LOG-FILE    Output all events to LOG-FILE
-  --show-events EVTS     Output events to the screen
-                         EVTS is comma separate list of events types or 'all'
+  --show-events EVTS     Output events to the screen [default: 'none']
+                         EVTS is comma separated list of events types or 'all'
+  --columns COLS         COLS is comma separated list of columns to display
+                         [default: 'container,status,logs,checks']
   --verbose-events       Show full docker events
   --no-tui               Disable TUI (ink/React) visual representation
   --timeout TIMEOUT      Timeout after TIMEOUT seconds
@@ -52,11 +54,17 @@ Options:
       js->clj
       clean-opts))
 
+(defn comma-keyword-arg [arg]
+  (set (map #(keyword (second (re-find #":*(.+)" %)))
+            (S/split arg #"[, ]"))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; General utility functions
 
 (def slurp-buf (promisify (.-readFile fs)))
+
+(defn obj->str [obj]
+  (js/JSON.stringify (clj->js obj)))
 
 (defn wait-exec
   "[Async] Wait for docker exec to complete and when complete resolve
@@ -102,9 +110,6 @@ Options:
     ;;(pprint result)
     result))
 
-(defn obj->str [obj]
-  (js/JSON.stringify (clj->js obj)))
-
 (defn log-regex
   "Construct a combined log regex using a sequence of regex strings.
   The combined regex starts with a ISO data string followed by
@@ -137,7 +142,7 @@ Options:
       {:ts ts :cindex cindex})))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; UI (ink/reagent) and Logging
+;; Running context/state
 
 ;; {:settings   CONFIG-SETTINGS
 ;;  :services   {S-NAME {C-IDX {:id C-ID
@@ -156,16 +161,20 @@ Options:
 ;;  :containers {C-ID INSPECT-DATA}
 ;;  :checks     SERVICE-CHECKS
 ;;  :log-file-stream LOG-FILE-STREAM}
+
 (defonce ctx (reagent/atom {}))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Visual UI (ink/reagent)
 
 ;; https://github.com/vadimdemedes/ink
 ;; https://css-tricks.com/almanac/properties/f/flex-direction/
-(def WIDTHS {:service 15
+(def WIDTHS {:container 15
              :status 7
-             :log-lines 5
-             :check-id 10})
+             :logs 5
+             :checks 10})
 
-(defn service-color [status]
+(defn container-color [status]
   (get {"created" "yellow"
         "running" "green"
         "exited"  "red"} status "grey"))
@@ -178,56 +187,63 @@ Options:
     exec                            "yellow"
     :else                           "black"))
 
-(defn service-dom []
-  (let [bar (fn [k] [:> Box {:key k :width 1}
-                     [:> Text {:color "grey"} "|"]])
-        {:keys [settings services containers]} @ctx
-        {:keys [check-len]} settings
+(defn bar [k]
+  [:> Box {:key k :width 1}
+   [:> Text {:color "grey"} "|"]])
+
+(defn cell [column text color]
+  [:> Box {:width (get WIDTHS column)}
+   [:> Text {:color color :wrap "truncate"} text]])
+
+(defn visual-table []
+  (let [{:keys [settings services containers]} @ctx
+        {:keys [check-len columns]} settings
+        col? #(contains? columns %)
+        pad-width (* (dec check-len) (inc (:checks WIDTHS)))
         sorted-services (sort-by (fn [[s d]] [(count (get-in d [1 :checks])) s])
                                  services)]
     [:> Box {:flexDirection "column"}
 
      ;; Header Row
      [:> Box {:flexDirection "row"}
-      (bar 1)
-      [:> Box {:width (:service WIDTHS)}
-       [:> Text { :color "blue"} "Service"]]
-      (bar 2)
-      [:> Box {:width (:status WIDTHS)}
-       [:> Text { :color "blue"} "Status"]]
-      (bar 3)
-      [:> Box {:width (:log-lines WIDTHS)}
-       [:> Text { :color "blue"} "Logs"]]
-      (bar 4)
-      [:> Box {:width (-> (:check-id WIDTHS) inc (* check-len) dec)}
-       [:> Text { :color "blue"} "Checks"]]
+      (when (col? :container) (bar 1))
+      (when (col? :container) (cell :container "Container" "blue"))
+      (when (col? :status)    (bar 2))
+      (when (col? :status)    (cell :status "Status" "blue"))
+      (when (col? :logs)      (bar 3))
+      (when (col? :logs)      (cell :logs "Logs" "blue"))
+      (when (col? :checks)    (bar 4))
+      (when (col? :checks)    (cell :checks "Checks" "blue"))
+      (when (col? :checks)    [:> Box {:width pad-width}])
       (bar 5)]
 
-     ;; Data Rows
+     ;; Container Rows
      (for [[service cstates] sorted-services
            [cidx {:keys [id log-lines checks] :as cstate}] cstates
            :let [{Name :Name {Status :Status} :State} (get containers id)
+                 status (or Status "unknown")
                  cname (str (name service) "_" cidx)
-                 svc-color (service-color Status)]]
+                 svc-color (container-color status)]]
        [:> Box {:key (str service "/" cidx) :flexDirection "row"}
-        (bar 1)
-        [:> Box {:width (:service WIDTHS)}
-         [:> Text {:color svc-color :wrap "truncate"} cname]]
-        (bar 2)
-        [:> Box {:width (:status WIDTHS)}
-         [:> Text {:color svc-color :wrap "truncate"} (or Status "unknown")]]
-        (bar 3)
-        [:> Box {:width (:log-lines WIDTHS)}
-         [:> Text {:wrap "truncate"} log-lines]]
-        (bar 4)
-        (for [check-idx (range check-len)
-              :let [{:keys [id] :as check} (get checks check-idx)]]
-          (list
-            [:> Box {:key check-idx :width (:check-id WIDTHS)}
-             (if check
-               [:> Text {:color (log-color Status check) :wrap "truncate"} id]
-               [:> Text {} " "])]
-            (bar (str service "/" cidx "/" check-idx))))])]))
+        (when (col? :container) (bar 1))
+        (when (col? :container) (cell :container cname svc-color))
+        (when (col? :status)    (bar 2))
+        (when (col? :status)    (cell :status status svc-color))
+        (when (col? :logs)      (bar 3))
+        (when (col? :logs)      (cell :logs log-lines "black"))
+        (when (col? :checks)    (for [check-idx (range check-len)
+                                      :let [{:keys [id] :as check} (get checks check-idx)
+                                            ckcolor (log-color status check)]]
+                                  (list
+                                    (bar (str service "/" cidx "/" check-idx))
+                                    [:> Box {:key check-idx}
+                                     (if check
+                                       (cell :checks id ckcolor)
+                                       (cell :checks " " "black"))])))
+        (bar 5)])]))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Logging
 
 (defn event-logger
   "[Async] Takes an event kind and event data and conditional prints
@@ -451,10 +467,9 @@ Options:
 
 (defn -main [& argv]
   (P/let [opts (parse-opts (or argv #js []))
-          {:keys [project show-events no-tui timeout]} opts
-          show-events (when show-events
-                        (set (map #(keyword (second (re-find #":*(.+)" %)))
-                                  (S/split show-events #"[, ]"))))
+          {:keys [project show-events columns no-tui timeout]} opts
+          show-events (when show-events (comma-keyword-arg show-events))
+          columns (when columns (comma-keyword-arg columns))
           timeout (when-let [timeout (:timeout opts)] (js/parseInt timeout))
           log-file-stream (when-let [log-file (:log-file opts)]
                             (.createWriteStream fs log-file #js {:flags "w"}))
@@ -470,6 +485,7 @@ Options:
           settings (merge (:settings checks-cfg)
                           opts
                           {:show-events show-events
+                           :columns columns
                            :timeout timeout
                            :start-time (js/Date.)
                            :check-len check-len})
@@ -497,6 +513,6 @@ Options:
       (update-container docker (.-Id container) true))
 
     (when-not no-tui
-      (render (reagent/as-element [service-dom])))
+      (render (reagent/as-element [visual-table])))
 
     (tick docker)))
