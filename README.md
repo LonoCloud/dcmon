@@ -35,11 +35,16 @@ compose services that behave in different ways. The checks file at
 services in the compose file.
 
 In one terminal, launch dcmon as described above using a PROJECT value
-of `${USER}-test`.
+of `${USER}-test`. For example, to use nbb directly:
+
+```
+./node_modules/.bin/nbb -cp src/ -m dcmon.core ${USER}-test ./examples/checks.yaml
+```
+
 
 In a second terminal, launch the compose file:
 ```
-docker-compose -p ${USER}-test -f examples/docker-compose.yaml up --force-recreate
+docker-compose -p ${USER}-test -f ./examples/docker-compose.yaml up --force-recreate
 ```
 
 In the dcmon terminal a visual representation of the service
