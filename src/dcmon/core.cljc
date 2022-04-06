@@ -304,14 +304,21 @@ Options:
   "Checks a deps map against the services map. For each service key in
   the deps map, it checks to see if the check ID (the value) has been
   completed successfully in the services map. If all deps have been
-  completed successfully then return true, otherwise false."
-  [services deps]
+  completed successfully then return true, otherwise false. If
+  source-service and source-cidx then when we are checking a service
+  that matches the source-service then the source-cidx must also match
+  (e.g. deps on other services must match every cidx whereas deps an
+  early step in the same service should only check the same cidx)"
+  [services deps {:keys [source-service source-cidx]}]
   (and
     (every? #(get services %) (keys deps))
     (every?
       identity
       (for [[service check-id] deps
-            [cidx {:keys [checks]}] (get services service)]
+            [cidx {:keys [checks]}] (get services service)
+            :when (or (not= service source-service)
+                      (and (= service source-service)
+                           (= cidx source-cidx)))]
         (every? :done? (filter #(= check-id (:id %)) checks))))))
 
 (defn tick
@@ -326,7 +333,7 @@ Options:
         cur-time (js/Date.)]
     (when (and finished
                (not (:fired? finished))  ;; only once
-               (deps-fulfilled? services finished))
+               (deps-fulfilled? services finished {}))
       (swap! ctx assoc-in [:settings :finished :fired?] true)
       (event :finish {:finished finished}))
 
@@ -345,7 +352,8 @@ Options:
             :when (and cmd
                        (not done?)
                        (not exec)
-                       (deps-fulfilled? services deps))]
+                       (deps-fulfilled? services deps
+                                        {:source-service service :source-cidx cidx}))]
       (let [container (.getContainer docker container-id)
             exec (docker-exec container cmd {})]
         (event :start-exec {:service service :cidx cidx :cmd cmd})
