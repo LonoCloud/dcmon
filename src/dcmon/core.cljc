@@ -29,6 +29,7 @@ Options:
                          [default: 'container,logs,checks']
   --verbose-events       Show full docker events
   --no-tui               Disable TUI (ink/React) visual representation
+  --render-on-exit-only  Show TUI output once at exit (e.g. timeout)
   --timeout TIMEOUT      Timeout after TIMEOUT seconds
                          (exit with error if not in finished state)
 ")
@@ -280,6 +281,12 @@ Options:
       ;; Returns a promise
       (.write log-file-stream (str ts " " kind " " data "\n")))))
 
+(defn exit [code]
+  (when (-> @ctx :settings :render-on-exit-only)
+    (render (reagent/as-element [visual-table])))
+  (js/process.exit code))
+
+
 (defn event
   "[Async] Handles an event. First the event kind and data is logged
   and then if the kind of event is an completion event then the
@@ -290,11 +297,8 @@ Options:
   (P/let [res (event-logger kind data)]
     ;; cases where we exit after event-logger completes
     (condp = kind
-      :finish (when-not (-> @ctx :settings :keep-running)
-                (js/process.exit 0))
-
-      :timeout (js/process.exit (:exit-code data))
-
+      :finish (when-not (-> @ctx :settings :keep-running) (exit 0))
+      :timeout (exit (:exit-code data))
       nil)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -493,7 +497,8 @@ Options:
 
 (defn -main [& argv]
   (P/let [opts (parse-opts (or argv #js []))
-          {:keys [project show-events columns no-tui timeout]} opts
+          {:keys [project show-events columns no-tui
+                  render-on-exit-only timeout]} opts
           show-events (when show-events (comma-keyword-arg show-events))
           columns (when columns (comma-keyword-arg columns))
           timeout (when-let [timeout (:timeout opts)] (js/parseInt timeout))
@@ -538,7 +543,7 @@ Options:
     (doseq [container containers]
       (update-container docker (.-Id container) true))
 
-    (when-not no-tui
+    (when-not (or no-tui render-on-exit-only)
       (render (reagent/as-element [visual-table])))
 
     (tick docker)))
