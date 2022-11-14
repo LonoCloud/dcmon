@@ -5,7 +5,7 @@ RUN apt-get -y update && \
 
 # Separate npm and clojure deps from main app build
 RUN mkdir -p /app
-ADD shadow-cljs.edn package.json /app/
+ADD shadow-cljs.edn package.json package-lock.json /app/
 RUN cd /app && npm --unsafe-perm install
 RUN cd /app && ./node_modules/.bin/shadow-cljs info
 
