@@ -29,9 +29,11 @@ Options:
                          [default: 'container,logs,checks']
   --verbose-events       Show full docker events
   --no-tui               Disable TUI (ink/React) visual representation
-  --render-on-exit-only  Show TUI output once at exit (e.g. timeout)
   --timeout TIMEOUT      Timeout after TIMEOUT seconds
                          (exit with error if not in finished state)
+  --static-once          Wait 5 seconds, show TUI output with fixed 300
+                         columns, then exit.
+                         Useful for CI context (especially with FORCE_COLOR=2).
 ")
 
 (def WAIT-EXEC-SLEEP 200)
@@ -282,7 +284,8 @@ Options:
       (.write log-file-stream (str ts " " kind " " data "\n")))))
 
 (defn exit [code]
-  (when (-> @ctx :settings :render-on-exit-only)
+  (when (-> @ctx :settings :static-once)
+    (set! (.-columns js/process.stdout) 300)
     (render (reagent/as-element [visual-table])))
   (js/process.exit code))
 
@@ -498,10 +501,12 @@ Options:
 (defn -main [& argv]
   (P/let [opts (parse-opts (or argv #js []))
           {:keys [project show-events columns no-tui
-                  render-on-exit-only timeout]} opts
+                  static-once timeout]} opts
           show-events (when show-events (comma-keyword-arg show-events))
           columns (when columns (comma-keyword-arg columns))
-          timeout (when-let [timeout (:timeout opts)] (js/parseInt timeout))
+          timeout (if static-once
+                    5
+                    (when-let [timeout (:timeout opts)] (js/parseInt timeout)))
           log-file-stream (when-let [log-file (:log-file opts)]
                             (.createWriteStream fs log-file #js {:flags "w"}))
           checks-bufs (P/all (for [f (:checks-file opts)] (slurp-buf f)))
@@ -543,7 +548,7 @@ Options:
     (doseq [container containers]
       (update-container docker (.-Id container) true))
 
-    (when-not (or no-tui render-on-exit-only)
+    (when-not (or no-tui static-once)
       (render (reagent/as-element [visual-table])))
 
     (tick docker)))
