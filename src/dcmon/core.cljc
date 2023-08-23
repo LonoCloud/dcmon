@@ -126,23 +126,24 @@ Options:
     (js/RegExp. (str "^(20[0-9-]+T[0-9:.]+Z)\\s+.*("
                      (S/join "|" regex-strs) ")") "m")))
 
-(defn log-regex-match
+(defn log-regex-matches
   "Takes a log-regex (generated using log-regex) and a string to match
-  against and returns '{:ts ts :cindex cindex}' where 'ts' is the date
-  string and 'cindex' is the the index of the sub-regex string that
-  matches."
+  against and returns a sequence of '{:ts ts :cindex cindex}' where
+  'ts' is the date string and 'cindex' is the the index of the
+  sub-regex string that matches."
   [lre s]
   (when-let [match (.match s lre)]
     (let [ts (second match)
-          cindex (-> match
+          groups (-> match
                      .-groups
                      js/Object.entries
-                     (->> (filter second)) ;; matching groups
-                     first                 ;; first matching group
-                     first                 ;; just the group name
-                     (.substr 1)           ;; trim the prefix
-                     js/parseInt)]         ;; numeric
-      {:ts ts :cindex cindex})))
+                     (->> (filter second)))]
+      (for [group groups]
+        {:ts ts
+         :cindex (-> group
+                     first               ;; just the group name
+                     (.substr 1)         ;; trim the prefix
+                     js/parseInt)}))))   ;; numeric
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Running context/state
@@ -387,21 +388,22 @@ Options:
   (let [{:keys [services containers]} @ctx
         {:keys [id checks log-lines log-regex]} (get-in services [service cidx])
         log (.toString chnk "utf8")
-        match (log-regex-match log-regex log)
-        new-checks (if match
-                     (let [{:keys [ts cindex]} match
-                           check (get checks cindex)
-                           {{:keys [Status]} :State} (get containers id)]
-                       (when (= "running" Status)
-                         (event :log-match {:service service :cidx cidx
-                                            :check check :ts ts}))
-                       (if (and (not (:done? check)) (= "running" Status))
-                         (do
-                           (event :check-done {:service service :cidx cidx :ts ts
-                                               :check (assoc check :done? true)})
-                           (assoc-in checks [cindex :done?] true))
-                         checks))
-                     checks)]
+        new-checks (if (not= "running" (get-in containers [id :State :Status]))
+                     checks
+                     (reduce (fn [checks {:keys [ts cindex]}]
+                               (let [check (get checks cindex)
+                                     log-base {:service service
+                                               :cidx cidx
+                                               :ts ts
+                                               :check check}]
+                                 (event :log-match log-base)
+                                 (if (:done? check)
+                                   checks
+                                   (let [log (assoc-in log-base [:check :done?] true)]
+                                     (event :check-done log)
+                                     (assoc-in checks [cindex :done?] true)))))
+                             checks
+                             (log-regex-matches log-regex log)))]
     (swap! ctx update-in [:services service cidx]
            merge {:log-lines (inc log-lines)
                   :checks new-checks})))
