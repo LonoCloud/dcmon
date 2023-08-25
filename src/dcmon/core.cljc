@@ -195,9 +195,9 @@ Options:
     "exited"  {:color (if (= 0 ExitCode) "#004000" "#700000")}
     {:color "grey"}))
 
-(defn check-style [service-status {:keys [done? result exec] :as check}]
+(defn check-style [service-status ExitCode {:keys [done? result exec] :as check}]
   (cond
-    (not= "running" service-status) {:color "grey"}
+    (not= "running" service-status) {:color (if (= 0 ExitCode) "#004000" "grey")}
     done?                           {:color "green"}
     (= 0 (:ExitCode result))        {:color "green"}
     exec                            {:color "yellow"}
@@ -256,7 +256,7 @@ Options:
         (when (col? :logs)      (cell :logs log-lines nil))
         (when (col? :checks)    (for [check-idx (range check-len)
                                       :let [{:keys [id] :as check} (get checks check-idx)
-                                            ckstyle (check-style status check)]]
+                                            ckstyle (check-style status ExitCode check)]]
                                   (list
                                     (bar (str service "/" cidx "/" check-idx))
                                     [:> Box {:key check-idx}
@@ -388,22 +388,20 @@ Options:
   (let [{:keys [services containers]} @ctx
         {:keys [id checks log-lines log-regex]} (get-in services [service cidx])
         log (.toString chnk "utf8")
-        new-checks (if (not= "running" (get-in containers [id :State :Status]))
-                     checks
-                     (reduce (fn [checks {:keys [ts cindex]}]
-                               (let [check (get checks cindex)
-                                     log-base {:service service
-                                               :cidx cidx
-                                               :ts ts
-                                               :check check}]
-                                 (event :log-match log-base)
-                                 (if (:done? check)
-                                   checks
-                                   (let [log (assoc-in log-base [:check :done?] true)]
-                                     (event :check-done log)
-                                     (assoc-in checks [cindex :done?] true)))))
-                             checks
-                             (log-regex-matches log-regex log)))]
+        new-checks (reduce (fn [checks {:keys [ts cindex]}]
+                             (let [check (get checks cindex)
+                                   log-base {:service service
+                                             :cidx cidx
+                                             :ts ts
+                                             :check check}]
+                               (event :log-match log-base)
+                               (if (:done? check)
+                                 checks
+                                 (let [log (assoc-in log-base [:check :done?] true)]
+                                   (event :check-done log)
+                                   (assoc-in checks [cindex :done?] true)))))
+                           checks
+                           (log-regex-matches log-regex log))]
     (swap! ctx update-in [:services service cidx]
            merge {:log-lines (inc log-lines)
                   :checks new-checks})))
@@ -469,8 +467,6 @@ Options:
       (swap! ctx #(-> %
                       (assoc-in [:containers id] inspect)
                       (assoc-in [:services service cidx :id] id)))
-      (when (not= "running" status)
-        (clear-checks service cidx))
       (if init?
         (init-container service cidx container status
                         (partial docker-log-handler service cidx))

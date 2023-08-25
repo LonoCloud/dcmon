@@ -1,5 +1,7 @@
 settings:
   finished: {final: "ping"}
+  #finished: {exit0: "exiting"}  # service that exits successfully
+  #finished: {exit7: "exiting"}  # service that exits with failure
 
 checks:
   exit0:
@@ -27,6 +29,15 @@ checks:
     - {id: "ping",     cmd: "ping -c 1 8.8.8.8",
                        deps: {counter: "Line 20"}}
 
+  delay30:
+    - {id: "Started",  regex: "Started"}
+    - {noop: true}
+    - {noop: true}
+    - {noop: true}
+    - {noop: true}
+    - {noop: true}
+    - {id: "Done",     regex: "Done"}
+
   final:
     - {id: "Started",  regex: "Started"}
     - {noop: true}  # visual spacers
@@ -34,7 +45,9 @@ checks:
     - {noop: true}
     - {noop: true}
     - {noop: true}
+    - {noop: true}
     - {id: "ping",     cmd: "ping -c 1 8.8.8.8",
                        deps: {scale:   "Started",
                               counter: "ping",
+                              delay30: "Done",
                               final:   "Started"}}
