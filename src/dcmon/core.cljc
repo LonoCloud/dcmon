@@ -69,6 +69,14 @@ Options:
 (defn obj->str [obj]
   (js/JSON.stringify (clj->js obj)))
 
+;; https://gist.github.com/danielpcox/c70a8aa2c36766200a95?permalink_comment_id=2711849#gistcomment-2711849
+(defn deep-merge [& maps]
+  (apply merge-with (fn [& args]
+                      (if (every? map? args)
+                        (apply deep-merge args)
+                        (last args)))
+         maps))
+
 (defn wait-exec
   "[Async] Wait for docker exec to complete and when complete resolve
   to result of inspecting successful exec or reject with exec error."
@@ -511,7 +519,7 @@ Options:
           checks-cfgs (map #(->clj (.load yaml %)) checks-bufs)
           checks-cfg (reduce (fn [cfg {:keys [settings checks]}]
                                (-> cfg
-                                   (update :settings merge settings)
+                                   (update :settings deep-merge settings)
                                    (update :checks merge checks)))
                              {:settings {} :checks {}}
                              checks-cfgs)
