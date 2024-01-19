@@ -499,7 +499,7 @@ Options:
 (defn -main [& argv]
   (P/let [opts (parse-opts (or argv #js []))
           {:keys [project show-events columns no-tui
-                  static-once timeout]} opts
+                  static-once timeout verbose]} opts
           show-events (when show-events (comma-keyword-arg show-events))
           columns (when columns (comma-keyword-arg columns))
           timeout (if static-once
@@ -542,6 +542,10 @@ Options:
     (.on js/process "SIGINT" #(js/process.exit 130))
 
     (event :start {:settings settings})
+
+    (when verbose
+      (println "Settings:") (pprint settings)
+      (println "Checks:") (pprint (:checks checks-cfg)))
 
     (doseq [container containers]
       (update-container docker (.-Id container) true))
