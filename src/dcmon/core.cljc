@@ -435,7 +435,7 @@ Options:
 (defn init-container
   "[Async] Configure log monitoring for a newly detected or newly
   running container. Resolves to the updated state of ctx."
-  [service cidx container status log-handler]
+  [service cidx container status tty log-handler]
   (let [{:keys [services]} @ctx
         old-stream (get-in services [service cidx :log-stream])
         log-stream (doto (stream/PassThrough.)
@@ -452,8 +452,10 @@ Options:
                                          :stdout true
                                          :stderr true
                                          :timestamps true})]
-      (-> (.-modem container)
-          (.demuxStream stream log-stream log-stream))
+      (if tty
+        (.pipe stream log-stream)
+        (-> (.-modem container)
+            (.demuxStream stream log-stream log-stream)))
       (.on stream "end" #(.end log-stream "!stop!"))
       (swap! ctx assoc-in [:services service cidx :log-stream] stream))))
 
@@ -469,6 +471,7 @@ Options:
             inspect-raw (.inspect container)
             inspect (->clj inspect-raw)
             status (-> inspect :State :Status)
+            tty (-> inspect :Config :Tty)
             service (keyword (-> inspect :Config :Labels :com.docker.compose.service))
             cidx (js/parseInt (-> inspect :Config :Labels :com.docker.compose.container-number))
             {:keys [services]} (ensure-service service cidx)]
@@ -476,7 +479,7 @@ Options:
                       (assoc-in [:containers id] inspect)
                       (assoc-in [:services service cidx :id] id)))
       (if init?
-        (init-container service cidx container status
+        (init-container service cidx container status tty
                         (partial docker-log-handler service cidx))
         (event :container-update {:service service :cidx cidx :id id
                                   :status status})))
