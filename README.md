@@ -8,7 +8,7 @@ Monitor docker-compose services.
 
 ```
 npm install
-./node_modules/.bin/nbb -cp src/ -m dcmon.core PROJECT ./checks.yaml
+./dcmon PROJECT ./checks.yaml
 ```
 
 * Compile and run with shadow-cljs:
@@ -38,7 +38,7 @@ In one terminal, launch dcmon as described above using a PROJECT value
 of `${USER}-test`. For example, to use nbb directly:
 
 ```
-./node_modules/.bin/nbb -cp src/ -m dcmon.core ${USER}-test ./examples/checks.yaml
+./dcmon ${USER}-test ./examples/checks.yaml
 ```
 
 
