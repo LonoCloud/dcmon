@@ -27,6 +27,11 @@ services:
     image: alpine
     command: sh -c 'echo "Started"; i=0; while true; do echo "Line $$i"; sleep 1; i=$$(( i + 1 )); done'
 
+  with_tty:
+    image: alpine
+    tty: true
+    command: sh -c 'echo "Started"; i=0; while true; do echo "Line $$i"; sleep 1; i=$$(( i + 1 )); done'
+
   delay30:
     image: alpine
     command: sh -c 'echo "Started"; for i in $$(seq 30); do echo "i - $$i"; sleep 1; done; echo "Done"; sleep 99999'
