@@ -1,6 +1,6 @@
 {
   "name": "dcmon",
-  "version": "1.4",
+  "version": "1.5",
   "description": "docker-compose monitor",
   "dependencies": {
     "dockerode": "^3.3.1",
