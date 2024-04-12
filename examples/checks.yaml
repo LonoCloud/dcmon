@@ -26,7 +26,7 @@ checks:
     - {id: "Line 10",  regex: "Line 10\\b"}
     - {id: "Line 15",  regex: "Line 15\\b"}
     - {id: "Line 20",  regex: "Line 20\\b"}
-    - {id: "ping",     cmd: "ping -c 1 8.8.8.8",
+    - {id: "ping",     cmd: "ping -c 1 final",
                        deps: {counter: "Line 20"}}
 
   with_tty:
@@ -51,7 +51,7 @@ checks:
     - {noop: true}
     - {noop: true}
     - {noop: true}
-    - {id: "ping",     cmd: "ping -c 1 8.8.8.8",
+    - {id: "ping",     cmd: "ping -c 1 counter",
                        deps: {scale:   "Started",
                               counter: "ping",
                               with_tty: "Line 20",
