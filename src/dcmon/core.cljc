@@ -27,7 +27,7 @@ Options:
                          EVTS is comma separated list of events types or 'all'
   --columns COLS         COLS is comma separated list of columns to display
                          [default: 'container,logs,checks']
-  --verbose-events       Show full docker events
+  --verbose-events       Show full docker events and repeated log matches
   --no-tui               Disable TUI (ink/React) visual representation
   --timeout TIMEOUT      Timeout after TIMEOUT seconds
                          (exit with error if not in finished state)
@@ -393,7 +393,8 @@ Options:
   logs for this container. If the log message matches a log check then
   mark it done."
   [service cidx chnk]
-  (let [{:keys [services containers]} @ctx
+  (let [{:keys [services containers settings]} @ctx
+        {:keys [verbose-events]} settings
         {:keys [id checks log-lines log-regex]} (get-in services [service cidx])
         log (.toString chnk "utf8")
         new-checks (reduce (fn [checks {:keys [ts cindex]}]
@@ -402,7 +403,9 @@ Options:
                                              :cidx cidx
                                              :ts ts
                                              :check check}]
-                               (event :log-match log-base)
+                               (when (or verbose-events
+                                         (not (:done? check)))
+                                 (event :log-match log-base))
                                (if (:done? check)
                                  checks
                                  (let [log (assoc-in log-base [:check :done?] true)]
