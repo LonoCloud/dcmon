@@ -29,7 +29,7 @@ docker run -it --rm -v /var/run/docker.sock:/var/run/docker.sock -v $(pwd)/check
 
 ## Example:
 
-The compose file at `examples/docker-compose.yaml` containers several
+The compose file at `examples/docker-compose.yaml` contains several
 compose services that behave in different ways. The checks file at
 `examples/checks.yaml` has example check definitions for each of the
 services in the compose file.
