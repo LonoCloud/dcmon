@@ -447,6 +447,7 @@ Options:
       (event :container-running {:service service :cidx cidx :id (.-id container)
                                  :recreate-stream? (if old-stream true false)}))
     (when old-stream
+      ;; Clean up old stream
       (.destroy old-stream)
       (swap! ctx update-in [:services service cidx] merge {:log-stream nil
                                                            :log-lines 0})
@@ -456,10 +457,11 @@ Options:
                                          :stderr true
                                          :timestamps true})]
       (if tty
-        (.pipe stream log-stream)
+        (.pipe stream log-stream #js {:end false})
         (-> (.-modem container)
             (.demuxStream stream log-stream log-stream)))
-      (.on stream "end" #(.end log-stream "!stop!"))
+      (.on stream "end" #(.end log-stream))
+
       (swap! ctx assoc-in [:services service cidx :log-stream] stream))))
 
 (defn update-container
