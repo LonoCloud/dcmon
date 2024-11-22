@@ -1,4 +1,4 @@
-FROM node:16 as build
+FROM node:20 AS build
 
 RUN apt-get -y update && \
     apt-get -y install default-jdk-headless
@@ -17,7 +17,7 @@ RUN cd /app && \
     chmod +x build/*.js
 
 
-FROM node:16-slim as run
+FROM node:20-slim AS run
 
 COPY --from=build /app/ /app/
 
