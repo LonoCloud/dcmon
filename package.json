@@ -1,6 +1,7 @@
 {
   "name": "dcmon",
-  "version": "1.5",
+  "version": "1.6.0",
+  "license": "SEE LICENSE IN LICENSE",
   "description": "docker-compose monitor",
   "dependencies": {
     "dockerode": "^3.3.1",
